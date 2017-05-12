@@ -18,6 +18,7 @@ require './conf.rb'
 
 class PB
 	def self.start total
+		return if !@progress_bars
 		puts ""
 		@@pbar = ProgressBar.create(:format => "%E |%w>%i| (%c / %C)",
 									:progress_mark  => "=",
@@ -26,10 +27,12 @@ class PB
 	end
 
 	def self.increment
+		return if !@progress_bars
 		@@pbar.increment
 	end
 
 	def self.stop
+		return if !@progress_bars
 		@@pbar.finish
 		puts "", ""
 	end
@@ -42,6 +45,10 @@ def create_driver
 			"--disable-web-security",
 			"--incognito"
 		],
+		'prefs' => {
+			'download.default_directory' => @output_dir,
+			'download.prompt_for_download' => true
+        }
 	})
 	return Selenium::WebDriver.for :chrome, desired_capabilities: caps
 end
@@ -69,8 +76,24 @@ end
 def click_elements elements
 	elements.each_with_index do |element, i|
 		element.location_once_scrolled_into_view
-		element.click
-		sleep 0.5
+		begin
+			element.click
+		rescue
+			sleep 0.1
+			begin
+				element.click
+			rescue
+				sleep 0.2
+				begin
+					element.click
+				rescue
+					sleep 0.3
+					element.click
+				end
+			end
+		end
+
+		sleep 0.3
 		PB.increment
 		break if @quick_mode and i >= @how_quick
 	end
@@ -115,10 +138,10 @@ def expand_months
 end
 
 def scan_for_tags
-	puts "", "Scan page for tags... "
+	puts "", "Scan page for tagged photos... "
 	photo_links = @driver.find_elements(:xpath => "//div[@class='timeline']//a[text()='photo']")
 	photo_links.collect! { |x| x.attribute("href") }
-	puts "\t Tagged in #{photo_links.length} photos", "", ""    
+	puts "\t Found #{photo_links.length} photos", "", ""
 	return photo_links
 end
 
@@ -134,8 +157,8 @@ def try_for_time
 	end
 end
 
-def get_hq_links photo_links
-	puts "", "Get HQ photo links... "
+def download_hq photo_links
+	puts "Downloading high quality photos... "
 	hq_links = {}
 	PB.start photo_links.length
 	skipped = []
@@ -144,6 +167,8 @@ def get_hq_links photo_links
 
 		begin
 			sleep 1 # this should make the skipping unnecessary
+
+			# todo this still doesnt work!!!!
 			try_for_time {
 				@driver.execute_script(
 					"var x=document.getElementsByClassName('pagingReady');
@@ -160,8 +185,8 @@ def get_hq_links photo_links
 			@driver.find_element(:xpath => "//span[@class='uiButtonText' and text() = 'Options']").click
 		}
 
-		img_url = try_for_time {
-			@driver.find_element(:xpath => "//a[@data-action-type='download_photo']").attribute("href")
+		try_for_time {
+			@driver.find_element(:xpath => "//a[@data-action-type='download_photo']").click
 		}
 
 		time = @driver.find_element(:css, 'div > span > span > a > abbr').attribute("data-utime")
@@ -171,7 +196,6 @@ def get_hq_links photo_links
 		filename.gsub!("-", ':')
 		filename.gsub!(/[^:0-9A-Za-z\s]/, '')
 		filename.gsub!(":", '-')
-		hq_links[filename] = img_url
 
 		PB.increment 
 
@@ -188,22 +212,6 @@ def get_hq_links photo_links
 	return hq_links
 end
 
-def download_files hq_links
-	puts "", "Download HQ photos... "
-	FileUtils.rm_rf(@output_dir)
-	Dir.mkdir(@output_dir)
-	#PB.start hq_links.length
-	hq_links.each do |filename, url|
-		filename = "#{@output_dir}/#{filename}.jpg"
-
-		puts "wget -O '#{filename}' #{url} --header='User-Agent: Mozilla/5.0 (Windows NT 5.1; rv:23.0) Gecko/20100101 Firefox/23.0'"
-
-		`wget -O '#{filename}' #{url} --header='User-Agent: Mozilla/5.0 (Windows NT 5.1; rv:23.0) Gecko/20100101 Firefox/23.0' --header='Referer: https://www.facebook.com'`
-		#PB.increment
-	end
-	#PB.stop
-end
-
 beginning_time = Time.now
 @driver = create_driver
 login
@@ -215,13 +223,7 @@ expand_months
 photo_links = scan_for_tags
 
 photo_links.each { |link| link.gsub! "https://m.", "https://www." }
-
-
-hq_photo_links = get_hq_links photo_links
-
-
-
-download_files hq_photo_links
+download_hq photo_links
 
 
 end_time = Time.now
