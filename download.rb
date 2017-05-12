@@ -1,12 +1,19 @@
+system "clear"
+
+# ruby
 require 'net/http'
 require 'uri'
-require 'progressbar'
-require 'selenium-webdriver'
 require 'pp'
 require 'securerandom'
 require 'fileutils'
 require 'open-uri'
 
+# gems
+require 'progressbar'
+require 'selenium-webdriver'
+require 'highline/import'
+
+# local
 require './conf.rb'
 
 class PB
@@ -26,21 +33,6 @@ class PB
 		@@pbar.finish
 		puts "", ""
 	end
-end
-
-def download_files hq_links
-	puts "", "Download HQ photos... "
-	PB.start hq_links.length
-	hq_links.each do |filename, url|
-		filename = "#{@output_dir}/#{filename}.jpg"
-
-		open(filename, 'wb') do |file|
-			file << open(url).read
-		end
-
-		PB.increment
-	end
-	PB.stop
 end
 
 def create_driver
@@ -74,20 +66,25 @@ def get_username
 	puts "done (#{@username})\n", ""
 end
 
+def click_elements elements
+	elements.each_with_index do |element, i|
+		element.location_once_scrolled_into_view
+		element.click
+		sleep 0.5
+		PB.increment
+		break if @quick_mode and i >= @how_quick
+	end
+end
+
 def open_all_years
 	puts "", "Open all years..."
 	@driver.get "https://m.facebook.com/#{@username}/allactivity?log_filter=cluster_200"
 	async_elements = @driver.find_elements(:css => ".timeline > div > div .async_elem")
+
+	async_elements.delete_if { |x| x.text !~ /^\d{4}$/ }
+
 	PB.start async_elements.length
-	async_elements.each_with_index do |element, i|
-		text = element.text
-		next if text !~ /^\d{4}$/
-		element.click
-		#debug puts "\t#{text}"
-		sleep 0.5
-		PB.increment
-		break if @quick_mode and i >=2
-	end
+	click_elements async_elements
 	PB.stop
 end
 
@@ -95,23 +92,13 @@ def open_all_months
 	puts "", "Open all months..."
 	async_elements = @driver.find_elements(:css => ".timeline > div > div .collapse")
 
-# I think this is a breaking change. Only found 332 photos running like this. Missing or dupes?
 	async_elements.delete_if { |x| x.text =~ /^\d{4}$/ }
 	async_elements.delete_if { |x| x.text =~ /^No stories available$/ }
 
-
 	PB.start async_elements.length
-	async_elements.each_with_index do |element, i|
-		text = element.text
-		element.click
-		#debug puts "\t#{text}"
-		sleep 0.5
-		PB.increment 
-		break if @quick_mode and i >=2
-	end
+	click_elements async_elements
 	PB.stop
 end
-
 
 def expand_months
 	puts "", "Fully expand months..."
@@ -120,14 +107,9 @@ def expand_months
 		async_elements.delete_if { |x| x.text =~ /^No more from/ }
 		break if async_elements.length == 0
 		
+		# todo this results in multiple progress bars because of the outer loop
 		PB.start async_elements.length
-		async_elements.each_with_index do |element, i|
-			text = element.text
-			element.click
-			# debug puts "\t#{text}"
-			sleep 0.5
-			PB.increment
-		end
+		click_elements async_elements
 		PB.stop
 	end
 end
@@ -140,30 +122,89 @@ def scan_for_tags
 	return photo_links
 end
 
+def try_for_time
+	start = Time.now
+	loop do
+		begin
+			return yield
+		rescue 
+			raise "Timeout. Waited for #{@timeoutInSeconds} seconds" if (Time.now - start >= @timeoutInSeconds)
+			sleep 0.2
+		end
+	end
+end
+
 def get_hq_links photo_links
 	puts "", "Get HQ photo links... "
 	hq_links = {}
 	PB.start photo_links.length
+	skipped = []
 	photo_links.each_with_index do |link, i|
 		@driver.get link
-		img_url = @driver.find_element(:xpath, './/a[contains(., "View full size")]').attribute("href")
-		json = @driver.find_element(:css, 'div > span > div > div > abbr').attribute("data-store")
-		name = @driver.find_element(:css, 'div > div > a > strong.actor').text
-		json_hash = JSON.parse json
-		time = json_hash["time"]
-		time = Time.at(time)
-		filename = time.to_date.to_s + " " + name + " - " + @driver.title + " " + SecureRandom.hex(1)
+
+		begin
+			sleep 1 # this should make the skipping unnecessary
+			try_for_time {
+				@driver.execute_script(
+					"var x=document.getElementsByClassName('pagingReady');
+					x[0].classList.add('pagingActivated');"
+				)
+			}
+		rescue
+			skipped.push link
+			PB.increment
+			next
+		end
+
+		try_for_time { 
+			@driver.find_element(:xpath => "//span[@class='uiButtonText' and text() = 'Options']").click
+		}
+
+		img_url = try_for_time {
+			@driver.find_element(:xpath => "//a[@data-action-type='download_photo']").attribute("href")
+		}
+
+		time = @driver.find_element(:css, 'div > span > span > a > abbr').attribute("data-utime")
+
+		time = Time.at(time.to_i)
+		filename = time.to_date.to_s + " - " + @driver.title + " " + SecureRandom.hex(1)
 		filename.gsub!("-", ':')
 		filename.gsub!(/[^:0-9A-Za-z\s]/, '')
 		filename.gsub!(":", '-')
 		hq_links[filename] = img_url
+
 		PB.increment 
-		break if @quick_mode and i >=10
+
+		break if @quick_mode and i >= @how_quick
 	end
 	PB.stop 
+
+	if skipped.length > 0
+		print "Skipped: " 
+		pp skipped
+		puts ""
+	end
+
 	return hq_links
 end
 
+def download_files hq_links
+	puts "", "Download HQ photos... "
+	FileUtils.rm_rf(@output_dir)
+	Dir.mkdir(@output_dir)
+	#PB.start hq_links.length
+	hq_links.each do |filename, url|
+		filename = "#{@output_dir}/#{filename}.jpg"
+
+		puts "wget -O '#{filename}' #{url} --header='User-Agent: Mozilla/5.0 (Windows NT 5.1; rv:23.0) Gecko/20100101 Firefox/23.0'"
+
+		`wget -O '#{filename}' #{url} --header='User-Agent: Mozilla/5.0 (Windows NT 5.1; rv:23.0) Gecko/20100101 Firefox/23.0' --header='Referer: https://www.facebook.com'`
+		#PB.increment
+	end
+	#PB.stop
+end
+
+beginning_time = Time.now
 @driver = create_driver
 login
 get_username
@@ -172,16 +213,19 @@ open_all_months
 expand_months
 
 photo_links = scan_for_tags
+
+photo_links.each { |link| link.gsub! "https://m.", "https://www." }
+
+
 hq_photo_links = get_hq_links photo_links
 
-FileUtils.rm_rf(@output_dir)
-Dir.mkdir(@output_dir)
+
 
 download_files hq_photo_links
 
 
-@end_time = Time.now
-elapsed = @end_time - @beginning_time
+end_time = Time.now
+elapsed = end_time - beginning_time
 sec = elapsed % 60
 min = elapsed / 60
-puts "---------------------------", " Finished in #{min.floor} min #{sec.floor} sec", "---------------------------", "", ""
+puts "--------------------------", " Finished in #{min.floor} min #{sec.floor} sec", "--------------------------", "", ""

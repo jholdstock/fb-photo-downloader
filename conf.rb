@@ -1,11 +1,5 @@
-require 'rubygems'
-require 'highline/import'
-
-system "clear"
-
-@beginning_time = Time.now
-
-@quick_mode = false
+@quick_mode = true
+@how_quick = 1
 @output_dir = "output"
 
 @email = ""
@@ -14,3 +8,9 @@ puts "Using email: #{@email}", ""
 @pass = ""
 #@pass = ask("Enter password: ") { |q| q.echo = false }
 puts ""
+
+if @quick_mode
+	@timeoutInSeconds = 10
+else
+	@timeoutInSeconds = 30
+end
