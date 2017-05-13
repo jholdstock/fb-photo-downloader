@@ -18,7 +18,7 @@ require './conf.rb'
 
 class PB
 	def self.start total
-		return if !@progress_bars
+		return unless $progress_bars
 		puts ""
 		@@pbar = ProgressBar.create(:format => "%E |%w>%i| (%c / %C)",
 									:progress_mark  => "=",
@@ -27,12 +27,12 @@ class PB
 	end
 
 	def self.increment
-		return if !@progress_bars
+		return unless $progress_bars
 		@@pbar.increment
 	end
 
 	def self.stop
-		return if !@progress_bars
+		return unless $progress_bars
 		@@pbar.finish
 		puts "", ""
 	end
@@ -46,48 +46,54 @@ def create_driver
 			"--incognito"
 		],
 		'prefs' => {
-			'download.default_directory' => @output_dir,
-			'download.prompt_for_download' => true
+			'download.default_directory' => $output_dir,
+			'download.prompt_for_download' => false
         }
 	})
 	return Selenium::WebDriver.for :chrome, desired_capabilities: caps
 end
 
 def login
-	print "", "Opening Chrome... "  
+	puts "Opening Chrome... "
 	@driver.get "https://www.facebook.com"
-	puts "done\n", "", ""
+	puts "    done", "", ""
 
 
-	print "Entering user ID and password... "  
-	@driver.find_element(:id => "email").send_keys @email
-	@driver.find_element(:id => "pass").send_keys @pass
+	puts "Entering user ID and password... "
+	@driver.find_element(:id => "email").send_keys $email
+	@driver.find_element(:id => "pass").send_keys $pass
 	@driver.find_element(:id => "pass").send_keys :enter
-	puts "done\n", "", ""
+	puts "    done", "", ""
 end
 
 def get_username
-	print "Getting account username... "  
+	puts "Getting account username... "
 	@driver.get "https://www.facebook.com/settings?tab=account&section=username&view"
 	@username = @driver.find_element(:css => "table.uiInfoTable input.inputtext")["value"]
-	puts "done (#{@username})\n", ""
+	puts "    done (#{@username})", ""
 end
 
 def click_elements elements
 	elements.each_with_index do |element, i|
-		element.location_once_scrolled_into_view
 		begin
+			element.location_once_scrolled_into_view
 			element.click
 		rescue
 			sleep 0.1
+			pp element.text
 			begin
+				element.location_once_scrolled_into_view
 				element.click
 			rescue
 				sleep 0.2
+				pp element.text
 				begin
+					element.location_once_scrolled_into_view
 					element.click
 				rescue
 					sleep 0.3
+					pp element.text
+					element.location_once_scrolled_into_view
 					element.click
 				end
 			end
@@ -95,12 +101,12 @@ def click_elements elements
 
 		sleep 0.3
 		PB.increment
-		break if @quick_mode and i >= @how_quick
+		break if $quick_mode and i >= $how_quick
 	end
 end
 
 def open_all_years
-	puts "", "Open all years..."
+	puts "", "", "Opening all years..."
 	@driver.get "https://m.facebook.com/#{@username}/allactivity?log_filter=cluster_200"
 	async_elements = @driver.find_elements(:css => ".timeline > div > div .async_elem")
 
@@ -112,7 +118,7 @@ def open_all_years
 end
 
 def open_all_months
-	puts "", "Open all months..."
+	puts "", "Opening all months..."
 	async_elements = @driver.find_elements(:css => ".timeline > div > div .collapse")
 
 	async_elements.delete_if { |x| x.text =~ /^\d{4}$/ }
@@ -124,24 +130,28 @@ def open_all_months
 end
 
 def expand_months
-	puts "", "Fully expand months..."
+	puts "", "Expanding months fully..."
 	loop do
 		async_elements = @driver.find_elements(:css => ".timeline > div > div > div > div .async_elem")
-		async_elements.delete_if { |x| x.text =~ /^No more from/ }
+		async_elements.delete_if { |x| x.text.strip == "" }
+
 		break if async_elements.length == 0
 		
 		# todo this results in multiple progress bars because of the outer loop
 		PB.start async_elements.length
 		click_elements async_elements
-		PB.stop
+		$progress_bars_before = $progress_bars
+		$progress_bars = false
 	end
+	$progress_bars = $progress_bars_before
+	PB.stop
 end
 
 def scan_for_tags
-	puts "", "Scan page for tagged photos... "
+	puts "", "Scanning page for tagged photos... "
 	photo_links = @driver.find_elements(:xpath => "//div[@class='timeline']//a[text()='photo']")
 	photo_links.collect! { |x| x.attribute("href") }
-	puts "\t Found #{photo_links.length} photos", "", ""
+	puts "    Found #{photo_links.length} photos", "", ""
 	return photo_links
 end
 
@@ -151,17 +161,19 @@ def try_for_time
 		begin
 			return yield
 		rescue 
-			raise "Timeout. Waited for #{@timeoutInSeconds} seconds" if (Time.now - start >= @timeoutInSeconds)
+			raise "Timeout. Waited for #{$timeoutInSeconds} seconds" if (Time.now - start >= $timeoutInSeconds)
 			sleep 0.2
 		end
 	end
 end
 
 def download_hq photo_links
-	puts "Downloading high quality photos... "
+	puts "", "Downloading high quality photos... "
+	FileUtils.rm_rf($output_dir)
+	Dir.mkdir($output_dir)
 	hq_links = {}
 	PB.start photo_links.length
-	skipped = []
+	$skipped = []
 	photo_links.each_with_index do |link, i|
 		@driver.get link
 
@@ -176,7 +188,7 @@ def download_hq photo_links
 				)
 			}
 		rescue
-			skipped.push link
+			$skipped.push link
 			PB.increment
 			next
 		end
@@ -199,15 +211,10 @@ def download_hq photo_links
 
 		PB.increment 
 
-		break if @quick_mode and i >= @how_quick
+		hq_links[link] = filename
+		break if $quick_mode and i >= $how_quick
 	end
 	PB.stop 
-
-	if skipped.length > 0
-		print "Skipped: " 
-		pp skipped
-		puts ""
-	end
 
 	return hq_links
 end
@@ -219,15 +226,45 @@ get_username
 open_all_years
 open_all_months
 expand_months
-
 photo_links = scan_for_tags
-
 photo_links.each { |link| link.gsub! "https://m.", "https://www." }
-download_hq photo_links
+begin
+	downloaded = download_hq photo_links
+ensure
+	sleep 5 # ensure all downloads are complete
+	@driver.quit
+	puts "Renaming files..."
 
 
-end_time = Time.now
-elapsed = end_time - beginning_time
-sec = elapsed % 60
-min = elapsed / 60
-puts "--------------------------", " Finished in #{min.floor} min #{sec.floor} sec", "--------------------------", "", ""
+
+	downloaded.each do |url, filename|
+		fbid = url[/\?fbid=(\d+)&/, 1]
+		raise "Could not find fbid in #{url}" if fbid == nil
+		Dir.foreach($output_dir) do |item|
+			next if item == '.' or item == '..'
+			raise "Could not find item #{item}" if item == nil
+			if item.include? fbid
+				ext = item[/(\.\w+)$/, 1]
+				FileUtils.mv $output_dir+"/"+item, $output_dir+"/"+filename+ext
+				break
+			end
+		end
+	end
+
+	puts "    done", "", ""
+
+	end_time = Time.now
+	elapsed = end_time - beginning_time
+	sec = elapsed % 60
+	min = elapsed / 60
+	puts "----------------------------",
+		 "  Finished in #{min.floor} min #{sec.floor} sec",
+		 "",
+		 "     Downloaded #{downloaded.length} photos",
+		 "     Skipped #{$skipped.length}",
+		 "",
+		 "     " + `du -sh #{$output_dir}`,
+		 "----------------------------",
+		 "", ""
+end
+
