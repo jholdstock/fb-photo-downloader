@@ -74,47 +74,37 @@ def get_username
 end
 
 def click_elements elements
+	PB.start elements.length
+
 	elements.each_with_index do |element, i|
 		begin
 			element.location_once_scrolled_into_view
 			element.click
 		rescue
-			sleep 0.1
-			pp element.text
+			sleep 0.5
 			begin
 				element.location_once_scrolled_into_view
 				element.click
 			rescue
-				sleep 0.2
-				pp element.text
-				begin
-					element.location_once_scrolled_into_view
-					element.click
-				rescue
-					sleep 0.3
-					pp element.text
-					element.location_once_scrolled_into_view
-					element.click
-				end
+				raise "element with text '#{element.text}' couldnt be clicked"
 			end
 		end
 
-		sleep 0.3
+		sleep 1
 		PB.increment
 		break if $quick_mode and i >= $how_quick
 	end
+	PB.stop
 end
 
 def open_all_years
 	puts "", "", "Opening all years..."
 	@driver.get "https://m.facebook.com/#{@username}/allactivity?log_filter=cluster_200"
 	async_elements = @driver.find_elements(:css => ".timeline > div > div .async_elem")
-
 	async_elements.delete_if { |x| x.text !~ /^\d{4}$/ }
 
-	PB.start async_elements.length
+	async_elements.reverse!
 	click_elements async_elements
-	PB.stop
 end
 
 def open_all_months
@@ -124,27 +114,20 @@ def open_all_months
 	async_elements.delete_if { |x| x.text =~ /^\d{4}$/ }
 	async_elements.delete_if { |x| x.text =~ /^No stories available$/ }
 
-	PB.start async_elements.length
+	async_elements.reverse!
 	click_elements async_elements
-	PB.stop
 end
 
 def expand_months
 	puts "", "Expanding months fully..."
 	loop do
 		async_elements = @driver.find_elements(:css => ".timeline > div > div > div > div .async_elem")
-		async_elements.delete_if { |x| x.text.strip == "" }
 
 		break if async_elements.length == 0
 		
 		# todo this results in multiple progress bars because of the outer loop
-		PB.start async_elements.length
 		click_elements async_elements
-		$progress_bars_before = $progress_bars
-		$progress_bars = false
 	end
-	$progress_bars = $progress_bars_before
-	PB.stop
 end
 
 def scan_for_tags
@@ -171,27 +154,24 @@ def download_hq photo_links
 	puts "", "Downloading high quality photos... "
 	FileUtils.rm_rf($output_dir)
 	Dir.mkdir($output_dir)
-	hq_links = {}
 	PB.start photo_links.length
+	downloaded = {}
 	$skipped = []
 	photo_links.each_with_index do |link, i|
 		@driver.get link
 
 		begin
-			sleep 1 # this should make the skipping unnecessary
-
-			# todo this still doesnt work!!!!
 			try_for_time {
 				@driver.execute_script(
-					"var x=document.getElementsByClassName('pagingReady');
-					x[0].classList.add('pagingActivated');"
+					"try {
+						var x=document.getElementsByClassName('pagingReady');
+						x[0].classList.add('pagingActivated');
+					} catch(e) {
+						var x = document.getElementsByClassName('fullScreenAvailable');
+						x[0].classList.add('pagingActivated');
+					}"
 				)
 			}
-		rescue
-			$skipped.push link
-			PB.increment
-			next
-		end
 
 		try_for_time { 
 			@driver.find_element(:xpath => "//span[@class='uiButtonText' and text() = 'Options']").click
@@ -204,19 +184,63 @@ def download_hq photo_links
 		time = @driver.find_element(:css, 'div > span > span > a > abbr').attribute("data-utime")
 
 		time = Time.at(time.to_i)
+		# todo dont use driver.title
 		filename = time.to_date.to_s + " - " + @driver.title + " " + SecureRandom.hex(1)
 		filename.gsub!("-", ':')
 		filename.gsub!(/[^:0-9A-Za-z\s]/, '')
 		filename.gsub!(":", '-')
 
+		downloaded[link] = filename
+
+		rescue
+			$skipped.push link
+		end
+
 		PB.increment 
 
-		hq_links[link] = filename
 		break if $quick_mode and i >= $how_quick
 	end
 	PB.stop 
 
-	return hq_links
+	return downloaded
+end
+
+def rename_files downloaded
+	puts "Renaming files..."
+
+	downloaded.each do |url, filename|
+		renamed = false
+		fbid = url[/\?fbid=(\d+)&/, 1]
+		if fbid == nil
+			fbid = url[/\.\d+\/(\d+)\/\?/, 1]
+		end
+
+		raise "Could not find fbid in #{url}" if fbid == nil
+		Dir.foreach($output_dir) do |item|
+			next if item == '.' or item == '..'
+			if item.include? fbid
+				ext = item[/(\.\w+)$/, 1]
+				FileUtils.mv $output_dir+"/"+item, $output_dir+"/"+filename+ext
+				renamed = true
+				break
+			end
+		end
+
+		raise "failed to rename image fbid=#{fbid} and url=#{url}" if renamed == false
+	end
+end
+
+def delete_duplicates
+	count = 0
+	Dir.foreach($output_dir) do |item|
+		next if item == '.' or item == '..'
+		if item =~ /\d{4}_/
+			FileUtils.rm $output_dir+"/"+item
+			puts "    rm #{item}"
+			count += 1
+		end
+	end
+	return count
 end
 
 beginning_time = Time.now
@@ -231,25 +255,11 @@ photo_links.each { |link| link.gsub! "https://m.", "https://www." }
 begin
 	downloaded = download_hq photo_links
 ensure
-	sleep 5 # ensure all downloads are complete
+	sleep 3 # ensure all downloads are complete
 	@driver.quit
-	puts "Renaming files..."
 
-
-
-	downloaded.each do |url, filename|
-		fbid = url[/\?fbid=(\d+)&/, 1]
-		raise "Could not find fbid in #{url}" if fbid == nil
-		Dir.foreach($output_dir) do |item|
-			next if item == '.' or item == '..'
-			raise "Could not find item #{item}" if item == nil
-			if item.include? fbid
-				ext = item[/(\.\w+)$/, 1]
-				FileUtils.mv $output_dir+"/"+item, $output_dir+"/"+filename+ext
-				break
-			end
-		end
-	end
+	rename_files downloaded
+	duplicates = delete_duplicates
 
 	puts "    done", "", ""
 
@@ -261,6 +271,7 @@ ensure
 		 "  Finished in #{min.floor} min #{sec.floor} sec",
 		 "",
 		 "     Downloaded #{downloaded.length} photos",
+		 "     Deleted #{duplicates} duplicates",
 		 "     Skipped #{$skipped.length}",
 		 "",
 		 "     " + `du -sh #{$output_dir}`,
