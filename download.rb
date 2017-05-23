@@ -186,11 +186,11 @@ def download_hq photo_links
 		time = Time.at(time.to_i)
 		time = time.to_date.to_s
 
-		user_name = @driver.find_element(:css, '.taggee').text.strip
+		user_name = @driver.find_element(:css, '._hli').text.strip
 
 		album_name = @driver.find_element(:css, '.fbPhotoMediaTitleNoFullScreen > a').text.strip
 
-		filename = "#{time} #{user_name} - #{album_name} (#{SecureRandom.hex(1)})"
+		filename = "#{time} #{user_name} - #{album_name} #{SecureRandom.hex(1)}"
 		filename.gsub!("-", ':')
 		filename.gsub!(/[^:0-9A-Za-z\s]/, '')
 		filename.gsub!(":", '-')
