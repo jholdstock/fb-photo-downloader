@@ -5,4 +5,5 @@ Download every photo you have ever been tagged in on Facebook. Even works for ph
 Anecdotally this even works for photos belonging to somebody who has blocked you!
 
 `bundle install`
+
 `ruby download.rb`
