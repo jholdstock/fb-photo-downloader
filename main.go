@@ -62,7 +62,10 @@ func main() {
 			page.MustElementX("//div[@aria-label='Actions for this post']").MustClick()
 			page.MustElementX("//span[text()='Download']").MustClick()
 			filename := fmt.Sprintf("%s/%04d.jpg", d, id)
-			_ = utils.OutputFile(filename, wait())
+			err := utils.OutputFile(filename, wait())
+			if err != nil {
+				panic(err)
+			}
 
 			id++
 
@@ -73,16 +76,19 @@ func main() {
 			res := regex.FindStringSubmatch(html)
 
 			nextImg := res[1]
-
+			fmt.Printf("Next: %q\n", nextImg)
 			if nextImg == doingImg ||
 				nextImg == firstImg {
+				fmt.Println("Done")
 				break
 			}
 
 			doingImg = nextImg
 
-			page.Navigate(fmt.Sprintf(urlPattern, doingImg, set))
-
+			err = page.Navigate(fmt.Sprintf(urlPattern, doingImg, set))
+			if err != nil {
+				panic(err)
+			}
 		}
 
 		page.MustClose()
